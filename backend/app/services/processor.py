@@ -617,19 +617,25 @@ class ProcessorService:
                                 raise
                         final_name = os.path.basename(final_path)
 
-                        if not already_there:
+                        upload_confirmed = False
+                        if already_there:
+                            upload_confirmed = True
+                            logger.debug("[upload] %s already at destination %s (hash match)", file.name, final_path)
+                        else:
                             try:
                                 await tgt_svc.upload_file(tgt_conn.access_token, final_path, data)
+                                upload_confirmed = True
                             except Exception as ul_exc:
                                 status = getattr(getattr(ul_exc, "response", None), "status_code", None)
                                 if status == 401:
                                     logger.warning("401 on upload for connection %s, refreshing and retrying.", tgt_conn.id)
                                     tgt_conn = await refresh_token_now(db, tgt_conn)
                                     await tgt_svc.upload_file(tgt_conn.access_token, final_path, data)
+                                    upload_confirmed = True
                                 else:
                                     raise
 
-                        if rule.delete_source:
+                        if rule.delete_source and upload_confirmed:
                             try:
                                 try:
                                     await src_svc.delete_file(src_conn.access_token, file.id, file.path)
