@@ -1,0 +1,69 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: fileflow-db
+    environment:
+      POSTGRES_USER: fileflow
+      POSTGRES_PASSWORD: fileflow
+      POSTGRES_DB: fileflow
+    ports:
+      - '5432:5432'
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U fileflow']
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: fileflow-backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+asyncpg://fileflow:fileflow@postgres:5432/fileflow
+      PORT: 3001
+    ports:
+      - '3001:3001'
+    env_file:
+      - ./backend/.env
+    healthcheck:
+      test: ['CMD-SHELL', 'curl -f http://localhost:3001/health || exit 1']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  worker:
+    build:
+      context: .
+      dockerfile: worker/Dockerfile
+    container_name: fileflow-worker
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+asyncpg://fileflow:fileflow@postgres:5432/fileflow
+    env_file:
+      - ./backend/.env
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: fileflow-frontend
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - '5173:80'
+
+volumes:
+  postgres_data:
