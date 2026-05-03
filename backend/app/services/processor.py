@@ -411,6 +411,11 @@ def _is_video(name: str) -> bool:
 # ─── Processor ────────────────────────────────────────────────────────────────
 
 class ProcessorService:
+    def __init__(self) -> None:
+        # Prevent concurrent execution of the same rule.
+        # Two jobs for the same rule (e.g. cron fire + Run Now) must not race.
+        self._running_rules: set[str] = set()
+
     async def run_job(self, job_id: str) -> None:
         async with async_session_factory() as db:
             result = await db.execute(
@@ -422,11 +427,24 @@ class ProcessorService:
             if not job:
                 return
 
-            # Mark running
+            rule: Rule = job.rule
+
+            # Prevent two instances of the same rule running concurrently.
+            # If another job for this rule is already in-flight, put this job
+            # back to pending so it will be retried on the next poll cycle.
+            if rule.id in self._running_rules:
+                logger.warning(
+                    "Job %s deferred: rule '%s' (%s) is already running.",
+                    job_id, rule.name, rule.id,
+                )
+                job.status = "pending"
+                await db.commit()
+                return
+
+            # Claim the lock and mark the job as running.
+            self._running_rules.add(rule.id)
             job.status = "running"
             await db.commit()
-
-            rule: Rule = job.rule
 
             try:
                 # Fetch source and target OAuth connections
@@ -515,6 +533,11 @@ class ProcessorService:
                 processed = skipped = errored = 0
                 wants_photos = "photos" in rule.file_types or "both" in rule.file_types
                 wants_videos = "videos" in rule.file_types or "both" in rule.file_types
+
+                # Paths we still need to process (kept for future folder cleanup feature).
+                pending_paths: set[str] = {
+                    f.path for f in files if f.id not in already_done
+                }
 
                 for file in files:
                     if file.id in already_done:
@@ -635,6 +658,9 @@ class ProcessorService:
                                 else:
                                     raise
 
+                        # Mark this file as no longer pending.
+                        pending_paths.discard(file.path)
+
                         if rule.delete_source and upload_confirmed:
                             try:
                                 try:
@@ -647,20 +673,6 @@ class ProcessorService:
                                         await src_svc.delete_file(src_conn.access_token, file.id, file.path)
                                     else:
                                         raise
-                                # Walk up the ancestor chain deleting empty folders
-                                # up to (but not including) the rule's source_path.
-                                parent = os.path.dirname(file.path)
-                                while parent and parent != "/" and parent != rule.source_path:
-                                    try:
-                                        if await src_svc.is_folder_empty(src_conn.access_token, parent):
-                                            await src_svc.delete_folder(src_conn.access_token, parent)
-                                            logger.info("Deleted empty folder: %s", parent)
-                                        else:
-                                            break  # folder still has content; no point going higher
-                                    except Exception as folder_exc:
-                                        logger.warning("Could not clean up empty folder %s: %s", parent, folder_exc)
-                                        break
-                                    parent = os.path.dirname(parent)
                             except Exception as del_exc:
                                 logger.warning("Failed to delete source file %s: %s", file.name, del_exc)
 
@@ -707,6 +719,8 @@ class ProcessorService:
                 job.error_message = str(exc)
                 await db.commit()
                 logger.exception("Job %s failed", job_id)
+            finally:
+                self._running_rules.discard(rule.id)
 
     async def _resolve_target_path(
         self,

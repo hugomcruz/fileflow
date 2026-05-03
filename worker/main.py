@@ -20,7 +20,7 @@ from app.services.processor import processor_service
 from app.services.scheduler import scheduler_service
 
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format="%(asctime)s  %(levelname)-8s  %(name)s  %(message)s",
 )
 # Keep noisy third-party libraries at WARNING so debug output stays readable

@@ -51,7 +51,7 @@ class Settings(BaseSettings):
 
     # Server
     port: int = 3001
-    frontend_url: str = "http://localhost:5173"
+    frontend_url: str = "http://localhost"
 
 
 settings = Settings()
