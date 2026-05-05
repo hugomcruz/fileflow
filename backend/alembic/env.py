@@ -2,8 +2,9 @@ import asyncio
 from logging.config import fileConfig
 
 from alembic import context
-from sqlalchemy import pool
+from sqlalchemy import pool, text
 from sqlalchemy.engine import Connection
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 # Alembic Config object
@@ -51,7 +52,19 @@ async def run_async_migrations() -> None:
         poolclass=pool.NullPool,
     )
     async with connectable.connect() as connection:
-        await connection.run_sync(do_run_migrations)
+        try:
+            await connection.run_sync(do_run_migrations)
+        except IntegrityError as exc:
+            # Guard against a rare corrupt-volume state where pg_type has a
+            # leftover "alembic_version" row but the table itself doesn't exist
+            # (caused by Docker being killed mid-DDL on a previous run).
+            if "alembic_version" not in str(exc):
+                raise
+            await connection.rollback()
+            # Drop the orphan type and retry so the migration can complete.
+            await connection.execute(text("DROP TYPE IF EXISTS alembic_version CASCADE"))
+            await connection.commit()
+            await connection.run_sync(do_run_migrations)
     await connectable.dispose()
 
 

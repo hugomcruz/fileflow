@@ -1,4 +1,4 @@
-name: Build FileFlow froentend
+name: Build FileFlow frontend
 
 on:
   workflow_dispatch:
